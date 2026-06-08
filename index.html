@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SAT Collision Visualizer</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #1e1e2e;
+            color: #cdd6f4;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 { margin-top: 0; color: #89b4fa; }
+        .container {
+            display: flex;
+            gap: 20px;
+            max-width: 1200px;
+        }
+        .controls {
+            background-color: #313244;
+            padding: 20px;
+            border-radius: 8px;
+            width: 300px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .control-group {
+            border: 1px solid #45475a;
+            padding: 10px;
+            border-radius: 6px;
+        }
+        .control-group h3 { margin: 0 0 10px 0; font-size: 16px; color: #f38ba8; }
+        .control-group.box-b h3 { color: #a6e3a1; }
+        label { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; }
+        input[type="range"] { width: 100%; margin-bottom: 10px; }
+        select { width: 100%; padding: 5px; background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; border-radius: 4px; }
+        canvas {
+            background-color: #181825;
+            border: 2px solid #45475a;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        #status {
+            margin-top: 15px;
+            font-size: 18px;
+            font-weight: bold;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Separating Axis Theorem (SAT) Explorer</h1>
+
+    <div class="container">
+        <div class="controls">
+            <div class="control-group">
+                <h3>Select Testing Axis</h3>
+                <select id="axisSelect">
+                    <option value="0">Box A - Axis X (Normal 1)</option>
+                    <option value="1">Box A - Axis Y (Normal 2)</option>
+                    <option value="2">Box B - Axis X (Normal 3)</option>
+                    <option value="3">Box B - Axis Y (Normal 4)</option>
+                </select>
+            </div>
+
+            <div class="control-group box-a">
+                <h3>Box A (Red)</h3>
+                <label>X Position <input type="range" id="aX" min="100" max="700" value="300"></label>
+                <label>Y Position <input type="range" id="aY" min="100" max="500" value="300"></label>
+                <label>Rotation <input type="range" id="aRot" min="0" max="360" value="0"></label>
+            </div>
+
+            <div class="control-group box-b">
+                <h3>Box B (Green)</h3>
+                <label>X Position <input type="range" id="bX" min="100" max="700" value="500"></label>
+                <label>Y Position <input type="range" id="bY" min="100" max="500" value="300"></label>
+                <label>Rotation <input type="range" id="bRot" min="0" max="360" value="45"></label>
+            </div>
+
+            <div id="status">Status: Checking...</div>
+        </div>
+
+        <canvas id="satCanvas" width="800" height="600"></canvas>
+    </div>
+
+    <script>
+        // --- 1. Mini Math Library ---
+        class Vec2 {
+            constructor(x, y) { this.x = x; this.y = y; }
+            add(v) { return new Vec2(this.x + v.x, this.y + v.y); }
+            sub(v) { return new Vec2(this.x - v.x, this.y - v.y); }
+            scale(s) { return new Vec2(this.x * s, this.y * s); }
+            dot(v) { return this.x * v.x + this.y * v.y; }
+            length() { return Math.hypot(this.x, this.y); }
+            normalized() { 
+                const l = this.length(); 
+                return l === 0 ? new Vec2(0,0) : new Vec2(this.x / l, this.y / l); 
+            }
+        }
+
+        // --- 2. State Management ---
+        const canvas = document.getElementById('satCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let state = {
+            boxA: { x: 300, y: 300, w: 120, h: 80, angle: 0, color: '#f38ba8' },
+            boxB: { x: 500, y: 300, w: 100, h: 100, angle: 45 * Math.PI / 180, color: '#a6e3a1' },
+            selectedAxisIndex: 0
+        };
+
+        const bindSlider = (id, obj, prop, isAngle = false) => {
+            document.getElementById(id).addEventListener('input', (e) => {
+                obj[prop] = isAngle ? e.target.value * (Math.PI / 180) : parseFloat(e.target.value);
+                render();
+            });
+        };
+
+        bindSlider('aX', state.boxA, 'x'); bindSlider('aY', state.boxA, 'y'); bindSlider('aRot', state.boxA, 'angle', true);
+        bindSlider('bX', state.boxB, 'x'); bindSlider('bY', state.boxB, 'y'); bindSlider('bRot', state.boxB, 'angle', true);
+        
+        document.getElementById('axisSelect').addEventListener('change', (e) => {
+            state.selectedAxisIndex = parseInt(e.target.value);
+            render();
+        });
+
+        // --- 3. SAT Math Logic ---
+        function getVertices(box) {
+            const cos = Math.cos(box.angle);
+            const sin = Math.sin(box.angle);
+            const hw = box.w / 2, hh = box.h / 2;
+
+            const corners = [
+                new Vec2(-hw, -hh), new Vec2(hw, -hh),
+                new Vec2(hw, hh), new Vec2(-hw, hh)
+            ];
+
+            return corners.map(c => new Vec2(
+                box.x + (c.x * cos - c.y * sin),
+                box.y + (c.x * sin + c.y * cos)
+            ));
+        }
+
+        // CORRECTED: Requires center, calculates offset before dot product
+        function projectVertices(vertices, axis, center) {
+            let min = Infinity, max = -Infinity;
+            for (let v of vertices) {
+                const centerToV = v.sub(center); 
+                const proj = centerToV.dot(axis);
+                if (proj < min) min = proj;
+                if (proj > max) max = proj;
+            }
+            return { min, max };
+        }
+
+        // --- 4. Rendering Logic ---
+        function drawBox(vertices, color) {
+            ctx.beginPath();
+            ctx.moveTo(vertices[0].x, vertices[0].y);
+            for (let i = 1; i < 4; i++) ctx.lineTo(vertices[i].x, vertices[i].y);
+            ctx.closePath();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.fillStyle = color + '33'; 
+            ctx.fill();
+        }
+
+        function render() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const vertsA = getVertices(state.boxA);
+            const vertsB = getVertices(state.boxB);
+
+            drawBox(vertsA, state.boxA.color);
+            drawBox(vertsB, state.boxB.color);
+
+            const axes = [
+                new Vec2(Math.cos(state.boxA.angle), Math.sin(state.boxA.angle)), 
+                new Vec2(-Math.sin(state.boxA.angle), Math.cos(state.boxA.angle)),
+                new Vec2(Math.cos(state.boxB.angle), Math.sin(state.boxB.angle)), 
+                new Vec2(-Math.sin(state.boxB.angle), Math.cos(state.boxB.angle)) 
+            ];
+
+            const activeAxis = axes[state.selectedAxisIndex];
+            const center = new Vec2(canvas.width / 2, canvas.height / 2);
+
+            ctx.beginPath();
+            ctx.moveTo(center.x - activeAxis.x * 1000, center.y - activeAxis.y * 1000);
+            ctx.lineTo(center.x + activeAxis.x * 1000, center.y + activeAxis.y * 1000);
+            ctx.strokeStyle = '#6c7086'; 
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // CORRECTED: Passing 'center' into these calls
+            const projA = projectVertices(vertsA, activeAxis, center);
+            const projB = projectVertices(vertsB, activeAxis, center);
+
+            const overlap = Math.max(0, Math.min(projA.max, projB.max) - Math.max(projA.min, projB.min));
+
+            const drawShadow = (proj, color, offset) => {
+                const startPoint = center.add(activeAxis.scale(proj.min));
+                const endPoint = center.add(activeAxis.scale(proj.max));
+                const perp = new Vec2(-activeAxis.y, activeAxis.x).scale(offset);
+                
+                ctx.beginPath();
+                ctx.moveTo(startPoint.x + perp.x, startPoint.y + perp.y);
+                ctx.lineTo(endPoint.x + perp.x, endPoint.y + perp.y);
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 8;
+                ctx.stroke();
+            };
+
+            // CORRECTED: Dashed lines use correct center offset
+            ctx.setLineDash([5, 5]);
+            ctx.lineWidth = 1;
+            
+            vertsA.forEach(v => {
+                const centerToV = v.sub(center);
+                const projScalar = centerToV.dot(activeAxis);
+                const pointOnAxis = center.add(activeAxis.scale(projScalar));
+                ctx.beginPath(); ctx.moveTo(v.x, v.y); ctx.lineTo(pointOnAxis.x, pointOnAxis.y);
+                ctx.strokeStyle = state.boxA.color + '88'; ctx.stroke();
+            });
+            
+            vertsB.forEach(v => {
+                const centerToV = v.sub(center);
+                const projScalar = centerToV.dot(activeAxis);
+                const pointOnAxis = center.add(activeAxis.scale(projScalar));
+                ctx.beginPath(); ctx.moveTo(v.x, v.y); ctx.lineTo(pointOnAxis.x, pointOnAxis.y);
+                ctx.strokeStyle = state.boxB.color + '88'; ctx.stroke();
+            });
+            ctx.setLineDash([]); 
+
+            drawShadow(projA, state.boxA.color, -10);
+            drawShadow(projB, state.boxB.color, 10);
+
+            // CORRECTED: Final collision loop checks the right variables
+            let isColliding = true;
+            for (let axis of axes) {
+                const pA = projectVertices(vertsA, axis, center);
+                const pB = projectVertices(vertsB, axis, center);
+                if (Math.min(pA.max, pB.max) - Math.max(pA.min, pB.min) <= 0) {
+                    isColliding = false;
+                    break;
+                }
+            }
+
+            const statusEl = document.getElementById('status');
+            if (isColliding) {
+                statusEl.innerText = "💥 COLLIDING! Shadows overlap on ALL 4 axes.";
+                statusEl.style.color = "#f38ba8";
+            } else if (overlap <= 0) {
+                statusEl.innerText = "🛑 SEPARATED! A gap was found on THIS axis.";
+                statusEl.style.color = "#a6e3a1";
+            } else {
+                statusEl.innerText = "⚠️ Overlapping on THIS axis, but check the others!";
+                statusEl.style.color = "#f9e2af";
+            }
+        }
+
+        render();
+    </script>
+</body>
+</html>
